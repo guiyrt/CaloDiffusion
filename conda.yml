@@ -1,0 +1,19 @@
+name: CaloDiffusion
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.9.19
+  - cudatoolkit=11.3
+  - pytorch==1.9.1
+  - torchvision==0.10.1
+  - pip
+  - pip:
+    - h5py
+    - tqdm
+    - numpy
+    - einops
+    - joblib
+    - PyYAML
+    - torchinfo
+    - matplotlib
