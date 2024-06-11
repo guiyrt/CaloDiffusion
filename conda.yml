@@ -2,13 +2,15 @@ name: CaloDiffusion
 channels:
   - pytorch
   - conda-forge
+  - nvidia/label/cuda-11.3.1
 dependencies:
   - python=3.9.19
   - cudatoolkit=11.3
-  - pytorch==1.9.1
-  - torchvision==0.10.1
+  - cuda-nvcc
   - pip
   - pip:
+    - --extra-index-url https://download.pytorch.org/whl/cu111
+    - torch==1.9.1+cu111
     - h5py
     - tqdm
     - numpy
