@@ -1,7 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mtick
-from matplotlib import gridspec
 import argparse
 import h5py as h5
 import os
@@ -137,29 +135,9 @@ if flags.sample:
             bins = XMLHandler("pion", binning_file)
 
         NN_embed = NNConverter(bins = bins).to(device = device)
-        
+    
 
-
-    if(flags.model == "AE"):
-        print("Loading AE from " + flags.model_loc)
-        model = CaloAE(dataset_config['SHAPE_PAD'][1:], batch_size, config=dataset_config).to(device=device)
-
-        saved_model = torch.load(flags.model_loc, map_location = device)
-        if('model_state_dict' in saved_model.keys()): model.load_state_dict(saved_model['model_state_dict'])
-        elif(len(saved_model.keys()) > 1): model.load_state_dict(saved_model)
-        #model.load_state_dict(torch.load(flags.model_loc, map_location=device))
-
-        generated = []
-        for i,(E,d_batch) in enumerate(data_loader):
-            E = E.to(device=device)
-            d_batch = d_batch.to(device=device)
-        
-            gen = model(d_batch).detach().cpu().numpy()
-            if(i == 0): generated = gen
-            else: generated = np.concatenate((generated, gen))
-            del E, d_batch
-
-    elif(flags.model == "Diffu"):
+    if(flags.model == "Diffu"):
         print("Loading Diffu model from " + flags.model_loc)
 
         shape = dataset_config['SHAPE_PAD'][1:] if (not orig_shape) else dataset_config['SHAPE_ORIG'][1:]

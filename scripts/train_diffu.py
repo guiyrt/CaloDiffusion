@@ -1,43 +1,37 @@
-import numpy as np
 import os
-os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 import argparse
-import h5py as h5
+import numpy as np
 import torch.optim as optim
 import torch.utils.data as torchdata
 
-import utils
-from CaloDiffu import *
-from models import *
+import scripts.utils as utils
+from scripts.models import *
+from scripts.CaloDiffu import *
 
 
 if __name__ == '__main__':
+    os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
     print("TRAIN DIFFU")
 
-    if(torch.cuda.is_available()): device = torch.device('cuda')
-    else: device = torch.device('cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
     parser = argparse.ArgumentParser()
-    
-    parser.add_argument('--data_folder', default='/wclustre/cms_mlsim/denoise/CaloChallenge/', help='Folder containing data and MC files')
-    parser.add_argument('--model', default='Diffu', help='Diffusion model to train')
+    parser.add_argument('--data_folder', default='../datasets', help='Folder containing data and MC files')
     parser.add_argument('-c', '--config', default='configs/test.json', help='Config file with training parameters')
-    parser.add_argument('--nevts', type=int,default=-1, help='Number of events to load')
-    parser.add_argument('--frac', type=float,default=0.85, help='Fraction of total events used for training')
-    parser.add_argument('--load', action='store_true', default=False,help='Load pretrained weights to continue the training')
-    parser.add_argument('--seed', type=int, default=1234,help='Pytorch seed')
+    parser.add_argument('--nevts', type=int, default=-1, help='Number of events to load')
+    parser.add_argument('--frac', type=float, default=0.85, help='Fraction of total events used for training')
+    parser.add_argument('--load', action='store_true', default=False, help='Load pretrained weights to continue the training')
+    parser.add_argument('--seed', type=int, default=1234, help='Pytorch seed')
     parser.add_argument('--reset_training', action='store_true', default=False,help='Retrain')
-    flags = parser.parse_args()
+    args = parser.parse_args()
 
-    dataset_config = utils.LoadJson(flags.config)
+    dataset_config = utils.LoadJson(args.config)
 
     print("TRAINING OPTIONS")
     print(dataset_config, flush = True)
 
-    torch.manual_seed(flags.seed)
-
-    cold_diffu = dataset_config.get('COLD_DIFFU', False)
-    cold_noise_scale = dataset_config.get('COLD_NOISE', 1.0)
+    torch.manual_seed(args.seed)
 
     nholdout  = dataset_config.get('HOLDOUT', 0)
 
@@ -55,20 +49,18 @@ if __name__ == '__main__':
     energies = []
 
     for i, dataset in enumerate(dataset_config['FILES']):
-        data_,e_ = utils.DataLoader(
-            os.path.join(flags.data_folder,dataset),
+        data_, e_ = utils.DataLoader(
+            os.path.join(args.data_folder, dataset),
             dataset_config['SHAPE_PAD'],
             emax = dataset_config['EMAX'],emin = dataset_config['EMIN'],
-            nevts = flags.nevts,
+            nevts = args.nevts,
             max_deposit=dataset_config['MAXDEP'], #noise can generate more deposited energy than generated
             logE=dataset_config['logE'],
             showerMap = dataset_config['SHOWERMAP'],
-
-            nholdout = nholdout if (i == len(dataset_config['FILES']) -1 ) else 0,
+            nholdout = nholdout if i == (len(dataset_config['FILES'])-1) else 0,
             dataset_num  = dataset_num,
-            orig_shape = orig_shape,
+            orig_shape = orig_shape
         )
-
 
         if(i ==0): 
             data = data_
@@ -76,99 +68,72 @@ if __name__ == '__main__':
         else:
             data = np.concatenate((data, data_))
             energies = np.concatenate((energies, e_))
-        
-    avg_showers = std_showers = E_bins = None
-    if(cold_diffu):
-        f_avg_shower = h5.File(dataset_config["AVG_SHOWER_LOC"])
-        #Already pre-processed
-        avg_showers = torch.from_numpy(f_avg_shower["avg_showers"][()].astype(np.float32)).to(device = device)
-        std_showers = torch.from_numpy(f_avg_shower["std_showers"][()].astype(np.float32)).to(device = device)
-        E_bins = torch.from_numpy(f_avg_shower["E_bins"][()].astype(np.float32)).to(device = device)
+    
 
-    NN_embed = None
-    if('NN' in shower_embed):
-        if(dataset_num == 1):
-            binning_file = "../CaloChallenge/code/binning_dataset_1_photons.xml"
-            bins = XMLHandler("photon", binning_file)
-        else: 
-            binning_file = "../CaloChallenge/code/binning_dataset_1_pions.xml"
-            bins = XMLHandler("pion", binning_file)
-
-        NN_embed = NNConverter(bins = bins).to(device = device)
+    if 'NN' in shower_embed:
+        particle = "photon" if dataset_num == 1 else "pion"
+        bins = XMLHandler(particle, f"../CaloChallenge/code/binning_dataset_1_{particle}s.xml")
+        NN_embed = NNConverter(bins=bins).to(device=device)
+    else:
+        NN_embed = None
         
 
-    dshape = dataset_config['SHAPE_PAD']
     energies = np.reshape(energies,(-1))    
-    if(not orig_shape): data = np.reshape(data,dshape)
-    else: data = np.reshape(data, (len(data), -1))
+    data = np.reshape(data, dataset_config['SHAPE_PAD']) if not orig_shape else np.reshape(data, (len(data), -1))
 
     num_data = data.shape[0]
     print("Data Shape " + str(data.shape))
-    data_size = data.shape[0]
     #print("Pre-processed shower mean %.2f std dev %.2f" % (np.mean(data), np.std(data)))
     torch_data_tensor = torch.from_numpy(data)
     torch_E_tensor = torch.from_numpy(energies)
     del data
-    #train_data, val_data = utils.split_data_np(data,flags.frac)
 
     torch_dataset  = torchdata.TensorDataset(torch_E_tensor, torch_data_tensor)
-    nTrain = int(round(flags.frac * num_data))
+    nTrain = int(round(args.frac * num_data))
     nVal = num_data - nTrain
     train_dataset, val_dataset = torch.utils.data.random_split(torch_dataset, [nTrain, nVal])
 
-    loader_train = torchdata.DataLoader(train_dataset, batch_size = batch_size, shuffle = True)
-    loader_val = torchdata.DataLoader(val_dataset, batch_size = batch_size, shuffle = True)
+    loader_train = torchdata.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    loader_val = torchdata.DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
 
     del torch_data_tensor, torch_E_tensor, train_dataset, val_dataset
-    checkpoint_folder = '../models/{}_{}/'.format(dataset_config['CHECKPOINT_NAME'],flags.model)
-    if not os.path.exists(checkpoint_folder):
-        os.makedirs(checkpoint_folder)
+    checkpoint_folder = '../models/{}/'.format(dataset_config['CHECKPOINT_NAME'])
+    os.makedirs(checkpoint_folder, exist_ok=True)
 
     checkpoint = dict()
     checkpoint_path = os.path.join(checkpoint_folder, "checkpoint.pth")
-    if(flags.load and os.path.exists(checkpoint_path)): 
+    if(args.load and os.path.exists(checkpoint_path)): 
         print("Loading training checkpoint from %s" % checkpoint_path, flush = True)
         checkpoint = torch.load(checkpoint_path, map_location = device)
         print(checkpoint.keys())
 
 
-    if(flags.model == "Diffu"):
-        shape = dataset_config['SHAPE_PAD'][1:] if (not orig_shape) else dataset_config['SHAPE_ORIG'][1:]
-        model = CaloDiffu(shape, config=dataset_config, training_obj = training_obj, NN_embed = NN_embed, nsteps = dataset_config['NSTEPS'],
-                cold_diffu = cold_diffu, avg_showers = avg_showers, std_showers = std_showers, E_bins = E_bins ).to(device = device)
+
+    shape = dataset_config['SHAPE_PAD'][1:] if not orig_shape else dataset_config['SHAPE_ORIG'][1:]
+    model = CaloDiffu(shape, config=dataset_config, training_obj=training_obj, NN_embed=NN_embed, nsteps=dataset_config['NSTEPS']).to(device=device)
 
 
-        #sometimes save only weights, sometimes save other info
-        if('model_state_dict' in checkpoint.keys()): model.load_state_dict(checkpoint['model_state_dict'])
-        elif(len(checkpoint.keys()) > 1): model.load_state_dict(checkpoint)
-
-
-    else:
-        print("Model %s not supported!" % flags.model)
-        exit(1)
-
-
-    os.system('cp CaloDiffu.py {}'.format(checkpoint_folder)) # bkp of model def
-    os.system('cp models.py {}'.format(checkpoint_folder)) # bkp of model def
-    os.system('cp {} {}'.format(flags.config,checkpoint_folder)) # bkp of config file
+    #sometimes save only weights, sometimes save other info
+    if('model_state_dict' in checkpoint.keys()): model.load_state_dict(checkpoint['model_state_dict'])
+    elif(len(checkpoint.keys()) > 1): model.load_state_dict(checkpoint)
 
     early_stopper = EarlyStopper(patience = dataset_config['EARLYSTOP'], mode = 'diff', min_delta = 1e-5)
-    if('early_stop_dict' in checkpoint.keys() and not flags.reset_training): early_stopper.__dict__ = checkpoint['early_stop_dict']
+    if('early_stop_dict' in checkpoint.keys() and not args.reset_training): early_stopper.__dict__ = checkpoint['early_stop_dict']
     print(early_stopper.__dict__)
     
 
-    criterion = nn.MSELoss().to(device = device)
+    criterion = nn.MSELoss().to(device=device)
 
     optimizer = optim.Adam(model.parameters(), lr = float(dataset_config["LR"]))
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer = optimizer, factor = 0.1, patience = 15, verbose = True) 
-    if('optimizer_state_dict' in checkpoint.keys() and not flags.reset_training): optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    if('scheduler_state_dict' in checkpoint.keys() and not flags.reset_training): scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    if('optimizer_state_dict' in checkpoint.keys() and not args.reset_training): optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    if('scheduler_state_dict' in checkpoint.keys() and not args.reset_training): scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     training_losses = np.zeros(num_epochs)
     val_losses = np.zeros(num_epochs)
     start_epoch = 0
     min_validation_loss = 99999.
-    if('train_loss_hist' in checkpoint.keys() and not flags.reset_training): 
+    if('train_loss_hist' in checkpoint.keys() and not args.reset_training): 
         training_losses = checkpoint['train_loss_hist']
         val_losses = checkpoint['val_loss_hist']
         start_epoch = checkpoint['epoch'] + 1
@@ -190,10 +155,6 @@ if __name__ == '__main__':
 
             t = torch.randint(0, model.nsteps, (data.size()[0],), device=device).long()
             noise = torch.randn_like(data)
-            #print('data', torch.mean(data), torch.std(data))
-            if(cold_diffu): #cold diffusion interpolates from avg showers instead of pure noise
-                noise = model.gen_cold_image(E, cold_noise_scale, noise)
-                
 
             batch_loss = model.compute_loss(data, E, noise = noise, t = t, loss_type = loss_type, energy_loss_scale = energy_loss_scale)
             batch_loss.backward()
@@ -215,7 +176,6 @@ if __name__ == '__main__':
 
             t = torch.randint(0, model.nsteps, (vdata.size()[0],), device=device).long()
             noise = torch.randn_like(vdata)
-            if(cold_diffu): noise = model.gen_cold_image(vE, cold_noise_scale, noise)
 
             batch_loss = model.compute_loss(vdata, vE, noise = noise, t = t, loss_type = loss_type, energy_loss_scale = energy_loss_scale)
 
@@ -223,7 +183,6 @@ if __name__ == '__main__':
             del vdata,vE, noise, batch_loss
 
         val_loss = val_loss/len(loader_val)
-        #scheduler.step(torch.tensor([val_loss]))
         val_losses[epoch] = val_loss
         print("val_loss: "+ str(val_loss), flush = True)
 
@@ -240,9 +199,8 @@ if __name__ == '__main__':
         # save the model
         model.eval()
         print("SAVING")
-        #torch.save(model.state_dict(), checkpoint_path)
         
-        #save full training state so can be resumed
+        # save full training state so can be resumed
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
@@ -266,4 +224,3 @@ if __name__ == '__main__':
         tfileout.write("\n".join("{}".format(tl) for tl in training_losses)+"\n")
     with open(checkpoint_folder + "/validation_losses.txt","w") as vfileout:
         vfileout.write("\n".join("{}".format(vl) for vl in val_losses)+"\n")
-

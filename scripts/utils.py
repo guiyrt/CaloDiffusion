@@ -1,4 +1,3 @@
-import json, yaml
 import os
 import h5py as h5
 import numpy as np
@@ -9,10 +8,9 @@ import torch
 import torch.nn as nn
 import sys
 import joblib
-from sklearn.preprocessing import QuantileTransformer
 sys.path.append("..")
 from CaloChallenge.code.XMLHandler import *
-from consts import *
+from scripts.consts import *
 
 #use tqdm if local, skip if batch job
 import sys
@@ -330,12 +328,12 @@ def HistRoutine(feed_dict,xlabel='',ylabel='Arbitrary units',reference_name='Gea
 
 
 
-def DataLoader(file_name,shape,emax,emin, nevts=-1,  max_deposit = 2, ecut = 0, logE=True, showerMap = 'log-norm', nholdout = 0, from_end = False, dataset_num = 2, orig_shape = False,
+def DataLoader(file_name,shape, emax, emin, nevts=-1,  max_deposit = 2, ecut = 0, logE=True, showerMap = 'log-norm', nholdout = 0, from_end = False, dataset_num = 2, orig_shape = False,
         evt_start = 0):
 
     with h5.File(file_name,"r") as h5f:
         #holdout events for testing
-        if(nevts == -1 and nholdout > 0): nevts = -(nholdout)
+        if(nevts == -1 and nholdout > 0): nevts = -nholdout
         end = evt_start + int(nevts)
         if(from_end):
             evt_start = -int(nevts)
@@ -345,16 +343,10 @@ def DataLoader(file_name,shape,emax,emin, nevts=-1,  max_deposit = 2, ecut = 0, 
         e = h5f['incident_energies'][evt_start:end].astype(np.float32)/1000.0
         shower = h5f['showers'][evt_start:end].astype(np.float32)/1000.0
 
-        
-    e = np.reshape(e,(-1,1))
-
-
     shower_preprocessed = preprocess_shower(shower, e, shape, showerMap, dataset_num = dataset_num, orig_shape = orig_shape, ecut = ecut, max_deposit=max_deposit)
+    E_preprocessed = np.log10(e/emin)/np.log10(emax/emin) if logE else (e-emin)/(emax-emin)
 
-    if logE:        
-        E_preprocessed = np.log10(e/emin)/np.log10(emax/emin)
-    else:
-        E_preprocessed = (e-emin)/(emax-emin)
+    exit()
 
     return shower_preprocessed, E_preprocessed 
 
@@ -375,8 +367,6 @@ def preprocess_shower(shower, e, shape, showerMap = 'log-norm', dataset_num = 2,
 
         g = GeomConverter(bins)
         shower = g.convert(g.reshape(shower))
-
-
 
     if(dataset_num > 3 or dataset_num <0 ): 
         print("Invalid dataset %i!" % dataset_num)
@@ -400,7 +390,6 @@ def preprocess_shower(shower, e, shape, showerMap = 'log-norm', dataset_num = 2,
         alpha = 1e-6
         x = alpha + (1 - 2*alpha)*shower
         shower = np.ma.log(x/(1-x)).filled(0)    
-
         if('norm' in showerMap): shower = (shower - c['logit_mean']) / c['logit_std']
         elif('scaled' in showerMap): shower = 2.0 * (shower - c['logit_min']) / (c['logit_max'] - c['logit_min']) - 1.0
 
@@ -422,7 +411,6 @@ def preprocess_shower(shower, e, shape, showerMap = 'log-norm', dataset_num = 2,
         qt = joblib.load(c['qt'])
         shape = shower.shape
         shower = qt.transform(shower.reshape(-1,1)).reshape(shower.shape)
-        
 
     return shower
 
@@ -444,13 +432,8 @@ def ReverseNorm(voxels,e,shape,emax,emin,max_deposit=2,logE=True, showerMap ='lo
     print('dset', dataset_num)
     c = dataset_params[dataset_num]
 
-    #shape=voxels.shape
     alpha = 1e-6
-    if logE:
-        energy = emin*(emax/emin)**e
-    else:
-        energy = emin + (emax-emin)*e
-
+    energy = emin*(emax/emin)**e if logE else emin + (emax-emin)*e
 
     if('quantile' in showerMap and c['qt'] is not None):
         print("Loading quantile transform from %s" % c['qt'])
@@ -536,7 +519,7 @@ def polar_to_cart(polar_data,nr=9,nalpha=16,nx=12,ny=12):
 
 class NNConverter(nn.Module):
     "Convert irregular geometry to regular one, initialized with regular geometric conversion, but uses trainable linear map"
-    def __init__(self, geomconverter = None, bins = None, hidden_size = 32):
+    def __init__(self, geomconverter = None, bins = None,):
         super().__init__()
         if(geomconverter is None):
             geomconverter = GeomConverter(bins)
@@ -547,22 +530,14 @@ class NNConverter(nn.Module):
         self.decs = nn.ModuleList([])
         eps = 1e-5 
         for i in range(len(self.gc.weight_mats)):
-
             rdim_in = len(self.gc.lay_r_edges[i]) - 1
-            #lay = nn.Sequential(*[nn.Linear(rdim_in, hidden_size), nn.GELU(), nn.Linear(hidden_size, hidden_size), 
-            #    nn.GELU(), nn.Linear(hidden_size, self.gc.dim_r_out)])
-
             lay = nn.Linear(rdim_in, self.gc.dim_r_out, bias = False)
             noise = torch.randn_like(self.gc.weight_mats[i])
             lay.weight.data = self.gc.weight_mats[i] + eps * noise
 
             self.encs.append(lay)
 
-
-            #inv_lay = nn.Sequential(*[nn.Linear(self.gc.dim_r_out, hidden_size), nn.GELU(), nn.Linear(hidden_size, hidden_size), 
-                #nn.GELU(), nn.Linear(hidden_size, rdim_in)])
             inv_lay = nn.Linear(self.gc.dim_r_out, rdim_in, bias = False)
-
             inv_init = torch.linalg.pinv(self.gc.weight_mats[i])
             noise2 = torch.randn_like(inv_init)
             inv_lay.weight.data =  inv_init + eps*noise2
@@ -604,7 +579,7 @@ class NNConverter(nn.Module):
         return out
 
 
-    def forward(x):
+    def forward(self, x):
         return self.enc(x)
 
 
@@ -618,8 +593,6 @@ class GeomConverter:
 
         #init from binning
         if(bins is not None):
-            
-
             self.layer_boundaries = np.unique(bins.GetBinEdges())
             rel_layers = bins.GetRelevantLayers()
             lay_alphas = [len(bins.alphaListPerLayer[idx][0]) for idx, redge in enumerate(bins.r_edges) if len(redge) > 1]
@@ -646,7 +619,6 @@ class GeomConverter:
         self.weight_mats = []
         for ilay in range(len(lay_r_edges)):
             dim_in = len(lay_r_edges[ilay]) - 1
-            lay = nn.Linear(dim_in, self.dim_r_out, bias = False)
             weight_mat = torch.zeros((self.dim_r_out, dim_in))
             for ir in range(dim_in):
                 o_idx_start = torch.nonzero(self.all_r_edges == self.lay_r_edges[ilay][ir])[0][0]

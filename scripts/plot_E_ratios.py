@@ -1,18 +1,10 @@
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mtick
-from matplotlib import gridspec
+import os
 import argparse
 import h5py as h5
-import os
+import numpy as np
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
-import time, sys, copy
 import utils
-import torch
-import torch.utils.data as torchdata
-from CaloAE import *
-from CaloDiffu import *
-import h5py
+from scripts.CaloDiffu import *
 
 
 plt_exts = ["png", "pdf"]
@@ -143,6 +135,7 @@ plot_routines = {
 
 
 print("Saving plots to "  + os.path.abspath(flags.plot_folder) )
+high_level = []
 for plot in plot_routines:
     if '2D' in plot and flags.model == 'all':continue #skip scatter plots superimposed
     print(plot)
