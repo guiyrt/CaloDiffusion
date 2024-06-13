@@ -1,15 +1,13 @@
-#some pytorch modules & useful functions
-from einops import rearrange
 import copy
 import math
-
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
-
-from inspect import isfunction
+import torch.nn as nn
+from einops import rearrange
 from functools import partial
+from inspect import isfunction
+import torch.nn.functional as F
+
 
 def exists(x):
     return x is not None
@@ -33,33 +31,25 @@ def cosine_beta_schedule(nsteps, s=0.008):
     return torch.clip(betas, 0.0001, 0.9999)
 
 
-class CylindricalConvTrans(nn.Module):
-    #assumes format of channels,zbin,phi_bin,rbin
-    def __init__(self, dim_in, dim_out, kernel_size = (3,4,4), stride= (1,2,2), groups = 1, padding = 1, output_padding = 0):
+class CylindricalConvTranspose(nn.Module):
+    # Format of channels, zbin, phi_bin, rbin
+    def __init__(self, dim_in, dim_out, kernel_size=(3,4,4), stride=(1,2,2), padding=1, output_padding=0):
         super().__init__()
-        if(type(padding) != int):
-            self.padding_orig = copy.copy(padding)
-            padding = list(padding)
-        else:
-            padding = [padding]*3
-            self.padding_orig = copy.copy(padding)
+        self.circ_pad = (0, 0, padding, padding, 0, 0)
             
-        padding[1] = kernel_size[1] - 1
-        self.convTrans = nn.ConvTranspose3d(dim_in, dim_out, kernel_size = kernel_size, stride = stride, padding = padding, output_padding = output_padding)
+        conv_transpose_pad = (padding, kernel_size[1]-1 ,padding)
+        self.convTrans = nn.ConvTranspose3d(dim_in, dim_out, kernel_size=kernel_size, stride=stride, padding=conv_transpose_pad, output_padding=output_padding)
 
     def forward(self, x):
-        #out size is : O = (i-1)*S + K - 2P
-        #to achieve 'same' use padding P = ((S-1)*W-S+F)/2, with F = filter size, S = stride, W = input size
-        #pad last dim with nothing, 2nd to last dim is circular one
-        circ_pad = self.padding_orig[1]
-        x = F.pad(x, pad = (0,0, circ_pad, circ_pad, 0, 0), mode = 'circular')
-        x = self.convTrans(x)
-        return x
+        # Out size is : O = (i-1)*S + K - 2P
+        # To achieve 'same' use padding P = ((S-1)*W-S+F)/2, with F = filter size, S = stride, W = input size
+        # Pad last dim with nothing, 2nd to last dim is circular one
+        return self.convTrans(F.pad(x, pad=self.circ_pad, mode='circular'))
 
 
 class CylindricalConv(nn.Module):
     #assumes format of channels,zbin,phi_bin,rbin
-    def __init__(self, dim_in, dim_out, kernel_size = 3, stride=1, groups = 1, padding = 0, bias = True):
+    def __init__(self, dim_in, dim_out, kernel_size=3, stride=1, groups=1, padding=0, bias=True):
         super().__init__()
         if(type(padding) != int):
             self.padding_orig = copy.copy(padding)
@@ -275,7 +265,7 @@ def Upsample(dim, extra_upsample = [0,0,0], cylindrical = False, compress_Z = Fa
     Z_kernel = 4 if extra_upsample[0] > 0 else 3
 
     extra_upsample[0] = 0
-    if(cylindrical): return CylindricalConvTrans(dim, dim, kernel_size = (Z_kernel,4,4), stride = (Z_stride,2,2), padding = 1, output_padding = extra_upsample)
+    if(cylindrical): return CylindricalConvTranspose(dim, dim, kernel_size = (Z_kernel,4,4), stride = (Z_stride,2,2), padding = 1, output_padding = extra_upsample)
     else: return nn.ConvTranspose3d(dim, dim, kernel_size = (Z_kernel,4,4), stride = (Z_stride,2,2), padding = 1, output_padding = extra_upsample)
 
 def Downsample(dim, cylindrical = False, compress_Z = False):
