@@ -1,4 +1,3 @@
-import copy
 import math
 import torch
 import numpy as np
@@ -48,27 +47,19 @@ class CylindricalConvTranspose(nn.Module):
 
 
 class CylindricalConv(nn.Module):
-    #assumes format of channels,zbin,phi_bin,rbin
+    # Format of channels, zbin, phi_bin, rbin
     def __init__(self, dim_in, dim_out, kernel_size=3, stride=1, groups=1, padding=0, bias=True):
         super().__init__()
-        if(type(padding) != int):
-            self.padding_orig = copy.copy(padding)
-            padding = list(padding)
-            padding[1] = 0
-        else:
-            padding = [padding]*3
-            self.padding_orig = copy.copy(padding)
-            padding[1] = 0
-        self.kernel_size = kernel_size
-        self.conv = nn.Conv3d(dim_in, dim_out, kernel_size=kernel_size, stride = stride, groups = groups, padding = padding, bias = bias)
+        self.circ_pad = (padding, padding, 0, 0, padding, padding)
+
+        conv_pad = (0, padding, 0)
+        self.conv = nn.Conv3d(dim_in, dim_out, kernel_size=kernel_size, stride=stride, groups=groups, padding=conv_pad, bias=bias)
 
     def forward(self, x):
-        #to achieve 'same' use padding P = ((S-1)*W-S+F)/2, with F = filter size, S = stride, W = input size
-        #pad last dim with nothing, 2nd to last dim is circular one
-        circ_pad = self.padding_orig[1]
-        x = F.pad(x, pad = (0,0, circ_pad, circ_pad, 0, 0), mode = 'circular')
-        x = self.conv(x)
-        return x
+        # To achieve 'same' use padding P = ((S-1)*W-S+F)/2, with F = filter size, S = stride, W = input size
+        # Pad last dim with nothing, 2nd to last dim is circular one
+        return self.conv(F.pad(x, pad=self.circ_pad , mode = 'circular'))
+
 
 class Residual(nn.Module):
     def __init__(self, fn):

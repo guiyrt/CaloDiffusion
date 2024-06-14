@@ -346,8 +346,6 @@ def DataLoader(file_name,shape, emax, emin, nevts=-1,  max_deposit = 2, ecut = 0
     shower_preprocessed = preprocess_shower(shower, e, shape, showerMap, dataset_num = dataset_num, orig_shape = orig_shape, ecut = ecut, max_deposit=max_deposit)
     E_preprocessed = np.log10(e/emin)/np.log10(emax/emin) if logE else (e-emin)/(emax-emin)
 
-    exit()
-
     return shower_preprocessed, E_preprocessed 
 
 
