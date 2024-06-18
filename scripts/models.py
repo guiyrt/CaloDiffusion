@@ -37,13 +37,13 @@ class CylindricalConvTranspose(nn.Module):
         self.circ_pad = (0, 0, padding, padding, 0, 0)
             
         conv_transpose_pad = (padding, kernel_size[1]-1 ,padding)
-        self.convTrans = nn.ConvTranspose3d(dim_in, dim_out, kernel_size=kernel_size, stride=stride, padding=conv_transpose_pad, output_padding=output_padding)
+        self.conv_transpose = nn.ConvTranspose3d(dim_in, dim_out, kernel_size=kernel_size, stride=stride, padding=conv_transpose_pad, output_padding=output_padding)
 
     def forward(self, x):
         # Out size is : O = (i-1)*S + K - 2P
         # To achieve 'same' use padding P = ((S-1)*W-S+F)/2, with F = filter size, S = stride, W = input size
         # Pad last dim with nothing, 2nd to last dim is circular one
-        return self.convTrans(F.pad(x, pad=self.circ_pad, mode='circular'))
+        return self.conv_transpose(F.pad(x, pad=self.circ_pad, mode='circular'))
 
 
 class CylindricalConv(nn.Module):
@@ -175,68 +175,32 @@ class ConvNextBlock(nn.Module):
         h = self.net(h)
         return h + self.res_conv(x)
 
-class Attention(nn.Module):
-    def __init__(self, dim, heads=4, dim_head=32, cylindrical = False):
-        super().__init__()
-        self.scale = dim_head**-0.5
-        self.heads = heads
-        hidden_dim = dim_head * heads
-
-        debug = False
-
-        if(cylindrical): 
-            self.to_qkv = CylindricalConv(dim, hidden_dim * 3, kernel_size = 1, bias=False)
-            self.to_out = CylindricalConv(hidden_dim, dim, kernel_size = 1)
-        else: 
-            self.to_qkv = nn.Conv3d(dim, hidden_dim * 3, kernel_size = 1, bias=False)
-            self.to_out = nn.Conv3d(hidden_dim, dim, kernel_size = 1)
-
-    def forward(self, x):
-        b, c, l, h, w = x.shape
-        qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(
-            lambda t: rearrange(t, "b (h c) x y z -> b h c (x y z)", h=self.heads), qkv
-        )
-        q = q * self.scale
-
-        sim = torch.einsum("b h d i, b h d j -> b h i j", q, k)
-        sim = sim - sim.amax(dim=-1, keepdim=True).detach()
-        attn = sim.softmax(dim=-1)
-
-        out = torch.einsum("b h i j, b h d j -> b h i d", attn, v)
-        out = rearrange(out, "b h (x y z) d -> b (h d) x y z", x=l, y=h, z=w)
-        return self.to_out(out)
 
 class LinearAttention(nn.Module):
-    def __init__(self, dim, heads=1, dim_head=32, cylindrical = False):
+    def __init__(self, dim, n_heads: int = 1, dim_head: int = 32, cylindrical: bool = False):
         super().__init__()
         self.scale = dim_head**-0.5
-        self.heads = heads
-        hidden_dim = dim_head * heads
+        self.n_heads = n_heads
 
-        if(cylindrical):
-            self.to_qkv = CylindricalConv(dim, hidden_dim * 3, kernel_size = 1, bias=False)
-            self.to_out = nn.Sequential(CylindricalConv(hidden_dim, dim, kernel_size = 1), nn.GroupNorm(1,dim))
-        else: 
-            self.to_qkv = nn.Conv3d(dim, hidden_dim * 3, kernel_size = 1, bias=False)
-            self.to_out = nn.Sequential(nn.Conv3d(hidden_dim, dim, kernel_size = 1), nn.GroupNorm(1,dim))
+        hidden_dim = dim_head * n_heads
+        conv_type = CylindricalConv if cylindrical else nn.Conv3d
+
+        self.to_qkv = conv_type(dim, hidden_dim * 3, kernel_size=1, bias=False)
+        self.to_out = nn.Sequential(conv_type(hidden_dim, dim, kernel_size=1), nn.GroupNorm(1, dim))
+
 
     def forward(self, x):
-        b, c, l, h, w = x.shape
+        _, _, l, h, w = x.shape
         qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(
-            lambda t: rearrange(t, "b (h c) x y z -> b h c (x y z)", h=self.heads), qkv
-        )
+        q, k, v = map(lambda t: rearrange(t, "b (h c) x y z -> b h c (x y z)", h=self.n_heads), qkv)
 
-        q = q.softmax(dim=-2)
+        q = q.softmax(dim=-2) * self.scale
         k = k.softmax(dim=-1)
 
-        q = q * self.scale
-        context = torch.einsum("b h d n, b h e n -> b h d e", k, v)
+        c = torch.einsum("b h d n, b h e n -> b h d e", k, v)
+        out = torch.einsum("b h d e, b h d n -> b h e n", c, q)
 
-        out = torch.einsum("b h d e, b h d n -> b h e n", context, q)
-        out = rearrange(out, "b h c (x y z) -> b (h c) x y z", h=self.heads, x=l, y=h, z = w)
-        return self.to_out(out)
+        return self.to_out(rearrange(out, "b h c (x y z) -> b (h c) x y z", h=self.n_heads, x=l, y=h, z = w))
 
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
