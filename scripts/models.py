@@ -61,15 +61,6 @@ class CylindricalConv(nn.Module):
         return self.conv(F.pad(x, pad=self.circ_pad , mode = 'circular'))
 
 
-class Residual(nn.Module):
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
-
-    def forward(self, x, *args, **kwargs):
-        return self.fn(x, *args, **kwargs) + x
-
-
 def extract(a, t, x_shape):
     batch_size = t.shape[0]
     out = a.gather(-1, t.cpu())
@@ -200,17 +191,25 @@ class LinearAttention(nn.Module):
         c = torch.einsum("b h d n, b h e n -> b h d e", k, v)
         out = torch.einsum("b h d e, b h d n -> b h e n", c, q)
 
-        return self.to_out(rearrange(out, "b h c (x y z) -> b (h c) x y z", h=self.n_heads, x=l, y=h, z = w))
+        return self.to_out(rearrange(out, "b h c (x y z) -> b (h c) x y z", h=self.n_heads, x=l, y=h, z=w))
 
 class PreNorm(nn.Module):
-    def __init__(self, dim, fn):
+    def __init__(self, dim: int, layer: nn.Module):
         super().__init__()
-        self.fn = fn
+        self.layer = layer
         self.norm = nn.GroupNorm(1, dim)
 
     def forward(self, x):
-        x = self.norm(x)
-        return self.fn(x)
+        return self.layer(self.norm(x))
+    
+
+class Residual(nn.Module):
+    def __init__(self, layer: nn.Module):
+        super().__init__()
+        self.layer = layer
+
+    def forward(self, x):
+        return self.layer(x) + x
 
 
 #up and down sample in 2 dims but keep z dimm
@@ -227,7 +226,6 @@ def Downsample(dim, cylindrical = False, compress_Z = False):
     Z_stride = 2 if compress_Z else 1
     if(cylindrical): return CylindricalConv(dim, dim, kernel_size = (3,4,4), stride = (Z_stride,2,2), padding = 1)
     else: return nn.Conv3d(dim, dim, kernel_size = (3,4,4), stride = (Z_stride,2,2), padding = 1)
-    #return nn.AvgPool3d(kernel_size = (1,2,2), stride = (1,2,2), padding =0)
 
 
 class FCN(nn.Module):
