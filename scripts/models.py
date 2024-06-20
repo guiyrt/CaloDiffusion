@@ -68,18 +68,17 @@ def extract(a, t, x_shape):
 
 
 class SinusoidalPositionEmbeddings(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
 
-    def forward(self, time):
-        device = time.device
+    def forward(self, time: torch.Tensor):
         half_dim = self.dim // 2
-        embeddings = np.log(10000) / (half_dim - 1)
-        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
-        embeddings = time[:, None] * embeddings[None, :]
-        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
-        return embeddings  
+
+        freq = torch.exp(torch.arange(half_dim, device=time.device) * -(np.log(10_000)/(half_dim - 1)))
+        pos = torch.einsum("t, e -> te", time, freq)
+
+        return torch.cat((pos.sin(), pos.cos()), dim=-1)
 
 
 class Block(nn.Module):
@@ -202,7 +201,6 @@ class PreNorm(nn.Module):
     def forward(self, x):
         return self.layer(self.norm(x))
     
-
 class Residual(nn.Module):
     def __init__(self, layer: nn.Module):
         super().__init__()
