@@ -2,21 +2,19 @@ import math
 import torch
 import numpy as np
 import torch.nn as nn
+from typing import Optional
 from einops import rearrange
 from functools import partial
-from inspect import isfunction
 import torch.nn.functional as F
 
 
 def exists(x):
     return x is not None
 
-
 def default(val, d):
     if exists(val):
         return val
-    return d() if isfunction(d) else d
-
+    return d() if callable(d) else d
 
 
 def cosine_beta_schedule(nsteps, s=0.008):
@@ -81,89 +79,37 @@ class SinusoidalPositionEmbeddings(nn.Module):
         return torch.cat((pos.sin(), pos.cos()), dim=-1)
 
 
-class Block(nn.Module):
-    def __init__(self, dim, dim_out, groups = 8, cylindrical = False):
+class ConvBlock(nn.Module):
+    def __init__(self, dim: int, dim_out: int, groups:int = 8, cylindrical: bool = False):
         super().__init__()
-        if(not cylindrical): 
-            self.proj = nn.Conv3d(dim, dim_out, kernel_size = 3, padding = 1)
-        else:  self.proj = CylindricalConv(dim, dim_out, kernel_size = 3, padding = 1)
+        conv_type = CylindricalConv if cylindrical else nn.Conv3d
+
+        self.conv = conv_type(dim, dim_out, kernel_size=3, padding=1)
         self.norm = nn.GroupNorm(groups, dim_out)
         self.act = nn.SiLU()
 
-    def forward(self, x, scale_shift = None):
-        x = self.proj(x)
-        x = self.norm(x)
+    def forward(self, x: torch.Tensor):
+        return self.act(self.norm(self.conv(x)))
 
-        if exists(scale_shift):
-            scale, shift = scale_shift
-            x = x * (scale + 1) + shift
-
-        x = self.act(x)
-        return x
-
-class ResnetBlock(nn.Module):
+class ResNetBlock(nn.Module):
     """https://arxiv.org/abs/1512.03385"""
     
-    def __init__(self, dim, dim_out, *, cond_emb_dim=None, groups=8, cylindrical = False):
+    def __init__(self, dim: int, dim_out: int, cond_emb_dim: Optional[int] = None, groups: int = 8, cylindrical: bool = False):
         super().__init__()
-        self.mlp = (
-            nn.Sequential(nn.SiLU(), nn.Linear(cond_emb_dim, dim_out))
-            if exists(cond_emb_dim)
-            else None
-        )
+        conv_type = CylindricalConv if cylindrical else nn.Conv3d
 
-        conv = CylindricalConv(dim, dim_out, kernel_size = 1) if cylindrical else nn.Conv3d(dim, dim_out, kernel_size = 1)
-        self.block1 = Block(dim, dim_out, groups=groups, cylindrical = cylindrical)
-        self.block2 = Block(dim_out, dim_out, groups=groups, cylindrical = cylindrical)
-        self.res_conv = conv if dim != dim_out else nn.Identity()
+        self.block1 = ConvBlock(dim, dim_out, groups, cylindrical)
+        self.block2 = ConvBlock(dim_out, dim_out, groups, cylindrical)
+        self.cond_emb = nn.Sequential(nn.SiLU(), nn.Linear(cond_emb_dim, dim_out)) if exists(cond_emb_dim) else None
+        self.res_conv = conv_type(dim, dim_out, kernel_size=1) if dim != dim_out else nn.Identity()
 
-    def forward(self, x, time_emb=None):
+    def forward(self, x: torch.Tensor, time: Optional[torch.Tensor] = None):
         h = self.block1(x)
 
-        if exists(self.mlp) and exists(time_emb):
-            time_emb = self.mlp(time_emb)
-            time_emb = rearrange(time_emb, "b c -> b c 1 1 1")
-            h = h + time_emb
+        if exists(self.cond_emb) and exists(time):
+            h += rearrange(self.cond_emb(time), "b c -> b c 1 1 1")
 
-        h = self.block2(h)
-        return h + self.res_conv(x)
-
-class ConvNextBlock(nn.Module):
-    """https://arxiv.org/abs/2201.03545"""
-
-    def __init__(self, dim, dim_out, *, cond_emb_dim=None, mult=2, norm=True, cylindrical = False):
-        super().__init__()
-        self.mlp = (
-            nn.Sequential(nn.GELU(), nn.Linear(cond_emb_dim, dim))
-            if exists(cond_emb_dim)
-            else None
-        )
-
-        
-        if(not cylindrical): conv_op = nn.Conv3d
-        else: conv_op = CylindricalConv
-
-        self.ds_conv = conv_op(dim, dim, kernel_size = 7, padding=3, groups=dim)
-
-        self.net = nn.Sequential(
-            nn.GroupNorm(1, dim) if norm else nn.Identity(),
-            conv_op(dim, dim_out * mult, kernel_size = 3, padding=1),
-            nn.GELU(),
-            nn.GroupNorm(1, dim_out * mult),
-            conv_op(dim_out * mult, dim_out, kernel_size =3, padding=1),
-        )
-
-        self.res_conv = conv_op(dim, dim_out, kernel_size = 1) if dim != dim_out else nn.Identity()
-
-    def forward(self, x, time_emb=None):
-        h = self.ds_conv(x)
-
-        if exists(self.mlp) and exists(time_emb):
-            condition = self.mlp(time_emb)
-            h = h + rearrange(condition, "b c -> b c 1 1")
-
-        h = self.net(h)
-        return h + self.res_conv(x)
+        return self.block2(h) + self.res_conv(x)
 
 
 class LinearAttention(nn.Module):
@@ -287,11 +233,9 @@ class CondUnet(nn.Module):
         channels=1,
         cond_dim = 64,
         resnet_block_groups=8,
-        use_convnext=False,
         mid_attn = False,
         block_attn = False,
         compress_Z = False,
-        convnext_mult=2,
         cylindrical = False,
         data_shape = (-1,1,45, 16,9),
         time_embed = True,
@@ -313,10 +257,7 @@ class CondUnet(nn.Module):
         if(not cylindrical): self.init_conv = nn.Conv3d(channels, layer_sizes[0], kernel_size = 3, padding = 1)
         else: self.init_conv = CylindricalConv(channels, layer_sizes[0], kernel_size = 3, padding = 1)
 
-        if use_convnext:
-            block_klass = partial(ConvNextBlock, mult=convnext_mult, cylindrical = cylindrical)
-        else:
-            block_klass = partial(ResnetBlock, groups=resnet_block_groups, cylindrical = cylindrical)
+        block_klass = partial(ResNetBlock, groups=resnet_block_groups, cylindrical = cylindrical)
 
         # time and energy embeddings
         half_cond_dim = cond_dim // 2
