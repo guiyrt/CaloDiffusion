@@ -68,7 +68,6 @@ if __name__ == '__main__':
         else:
             data = np.concatenate((data, data_))
             energies = np.concatenate((energies, e_))
-    
 
     if 'NN' in shower_embed:
         particle = "photon" if dataset_num == 1 else "pion"
@@ -76,10 +75,6 @@ if __name__ == '__main__':
         NN_embed = NNConverter(bins=bins).to(device=device)
     else:
         NN_embed = None
-        
-
-    energies = np.reshape(energies,(-1))    
-    data = np.reshape(data, dataset_config['SHAPE_PAD']) if not orig_shape else np.reshape(data, (len(data), -1))
 
     num_data = data.shape[0]
     print("Data Shape " + str(data.shape))
