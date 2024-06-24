@@ -33,8 +33,8 @@ class CylindricalConvTranspose(nn.Module):
     def __init__(self, dim_in, dim_out, kernel_size=(3,4,4), stride=(1,2,2), padding=1, output_padding=0):
         super().__init__()
         self.circ_pad = (0, 0, padding, padding, 0, 0)
-            
         conv_transpose_pad = (padding, kernel_size[1]-1 ,padding)
+        
         self.conv_transpose = nn.ConvTranspose3d(dim_in, dim_out, kernel_size=kernel_size, stride=stride, padding=conv_transpose_pad, output_padding=output_padding)
 
     def forward(self, x):
@@ -48,15 +48,15 @@ class CylindricalConv(nn.Module):
     # Format of channels, zbin, phi_bin, rbin
     def __init__(self, dim_in, dim_out, kernel_size=3, stride=1, groups=1, padding=0, bias=True):
         super().__init__()
-        self.circ_pad = (padding, padding, 0, 0, padding, padding)
+        self.circ_pad = (0, 0, padding, padding, 0, 0)
+        conv_pad = (padding, 0, padding)
 
-        conv_pad = (0, padding, 0)
         self.conv = nn.Conv3d(dim_in, dim_out, kernel_size=kernel_size, stride=stride, groups=groups, padding=conv_pad, bias=bias)
 
     def forward(self, x):
         # To achieve 'same' use padding P = ((S-1)*W-S+F)/2, with F = filter size, S = stride, W = input size
         # Pad last dim with nothing, 2nd to last dim is circular one
-        return self.conv(F.pad(x, pad=self.circ_pad , mode = 'circular'))
+        return self.conv(F.pad(x, pad=self.circ_pad, mode='circular'))
 
 
 def extract(a, t, x_shape):
@@ -68,15 +68,30 @@ def extract(a, t, x_shape):
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
-        self.dim = dim
+        halfdim = dim // 2
+
+        self.dim_in = halfdim // 4
+        self.hidden = nn.Sequential(nn.Linear(halfdim//2, halfdim), nn.GELU())
+        self.out =  nn.Linear(halfdim, halfdim)
 
     def forward(self, time: torch.Tensor):
-        half_dim = self.dim // 2
-
-        freq = torch.exp(torch.arange(half_dim, device=time.device) * -(np.log(10_000)/(half_dim - 1)))
+        freq = torch.exp(torch.arange(self.dim_in, device=time.device) * -(np.log(10_000)/(self.dim_in - 1)))
         pos = torch.einsum("t, e -> te", time, freq)
 
-        return torch.cat((pos.sin(), pos.cos()), dim=-1)
+        return self.out(self.hidden(torch.cat((pos.sin(), pos.cos()), dim=-1)))
+
+class MlpEmbeddings(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        halfdim = dim // 2
+
+        self.unflatten = nn.Unflatten(-1, (-1, 1))
+        self._in = nn.Sequential(nn.Linear(1, halfdim // 2), nn.GELU())
+        self.hidden = nn.Sequential(nn.Linear(halfdim // 2, halfdim), nn.GELU())
+        self.out = nn.Linear(halfdim, halfdim)
+
+    def forward(self, time: torch.Tensor):
+        return self.out(self.hidden(self._in(self.unflatten(time))))
 
 
 class ConvBlock(nn.Module):
@@ -94,14 +109,14 @@ class ConvBlock(nn.Module):
 class ResNetBlock(nn.Module):
     """https://arxiv.org/abs/1512.03385"""
     
-    def __init__(self, dim: int, dim_out: int, cond_emb_dim: Optional[int] = None, groups: int = 8, cylindrical: bool = False):
+    def __init__(self, dim_in: int, dim_out: int, cond_dim: Optional[int] = None, groups: int = 8, cylindrical: bool = False):
         super().__init__()
         conv_type = CylindricalConv if cylindrical else nn.Conv3d
 
-        self.block1 = ConvBlock(dim, dim_out, groups, cylindrical)
+        self.block1 = ConvBlock(dim_in, dim_out, groups, cylindrical)
         self.block2 = ConvBlock(dim_out, dim_out, groups, cylindrical)
-        self.cond_emb = nn.Sequential(nn.SiLU(), nn.Linear(cond_emb_dim, dim_out)) if exists(cond_emb_dim) else None
-        self.res_conv = conv_type(dim, dim_out, kernel_size=1) if dim != dim_out else nn.Identity()
+        self.cond_emb = nn.Sequential(nn.SiLU(), nn.Linear(cond_dim, dim_out)) if exists(cond_dim) else None
+        self.res_conv = conv_type(dim_in, dim_out, kernel_size=1) if dim_in != dim_out else nn.Identity()
 
     def forward(self, x: torch.Tensor, time: Optional[torch.Tensor] = None):
         h = self.block1(x)
@@ -158,7 +173,7 @@ class Residual(nn.Module):
 
 #up and down sample in 2 dims but keep z dimm
 
-def Upsample(dim, extra_upsample = [0,0,0], cylindrical = False, compress_Z = False):
+def Upsample(dim, extra_upsample = [0,0,0], cylindrical = False, compress_Z: bool = False):
     Z_stride = 2 if compress_Z else 1
     Z_kernel = 4 if extra_upsample[0] > 0 else 3
 
@@ -259,23 +274,9 @@ class CondUnet(nn.Module):
 
         block_klass = partial(ResNetBlock, groups=resnet_block_groups, cylindrical = cylindrical)
 
-        # time and energy embeddings
-        half_cond_dim = cond_dim // 2
 
-        time_layers = []
-        if(time_embed): time_layers = [SinusoidalPositionEmbeddings(half_cond_dim//2)]
-        else: time_layers = [nn.Unflatten(-1, (-1, 1)), nn.Linear(1, half_cond_dim//2),nn.GELU() ]
-        time_layers += [ nn.Linear(half_cond_dim//2, half_cond_dim), nn.GELU(), nn.Linear(half_cond_dim, half_cond_dim)]
-
-
-        cond_layers = []
-        if(cond_embed): cond_layers = [SinusoidalPositionEmbeddings(half_cond_dim//2)]
-        else: cond_layers = [nn.Unflatten(-1, (-1, 1)), nn.Linear(1, half_cond_dim//2),nn.GELU()]
-        cond_layers += [ nn.Linear(half_cond_dim//2, half_cond_dim), nn.GELU(), nn.Linear(half_cond_dim, half_cond_dim)]
-
-
-        self.time_mlp = nn.Sequential(*time_layers)
-        self.cond_mlp = nn.Sequential(*cond_layers)
+        self.time_mlp = SinusoidalPositionEmbeddings(cond_dim) if time_embed else MlpEmbeddings(cond_dim)
+        self.cond_mlp = SinusoidalPositionEmbeddings(cond_dim) if cond_embed else MlpEmbeddings(cond_dim)
 
 
         # layers
@@ -300,8 +301,8 @@ class CondUnet(nn.Module):
             self.downs.append(
                 nn.ModuleList(
                     [
-                        block_klass(dim_in, dim_out, cond_emb_dim=cond_dim),
-                        block_klass(dim_out, dim_out, cond_emb_dim=cond_dim),
+                        block_klass(dim_in, dim_out, cond_dim=cond_dim),
+                        block_klass(dim_out, dim_out, cond_dim=cond_dim),
                         Downsample(dim_out, cylindrical, compress_Z = compress_Z) if not is_last else nn.Identity(),
                     ]
                 )
@@ -309,9 +310,9 @@ class CondUnet(nn.Module):
             if(self.block_attn) : self.downs_attn.append(Residual(PreNorm(dim_out, LinearAttention(dim_out, cylindrical = cylindrical))))
 
         mid_dim = layer_sizes[-1]
-        self.mid_block1 = block_klass(mid_dim, mid_dim, cond_emb_dim=cond_dim)
+        self.mid_block1 = block_klass(mid_dim, mid_dim, cond_dim=cond_dim)
         if(self.mid_attn): self.mid_attn = Residual(PreNorm(mid_dim, LinearAttention(mid_dim, cylindrical = cylindrical)))
-        self.mid_block2 = block_klass(mid_dim, mid_dim, cond_emb_dim=cond_dim)
+        self.mid_block2 = block_klass(mid_dim, mid_dim, cond_dim=cond_dim)
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = (ind >= (num_resolutions - 1))
@@ -319,12 +320,11 @@ class CondUnet(nn.Module):
             if(not is_last): 
                 extra_upsample = self.extra_upsamples.pop()
 
-
             self.ups.append(
                 nn.ModuleList(
                     [
-                        block_klass(dim_out * 2, dim_in, cond_emb_dim=cond_dim),
-                        block_klass(dim_in, dim_in, cond_emb_dim=cond_dim),
+                        block_klass(dim_out * 2, dim_in, cond_dim=cond_dim),
+                        block_klass(dim_in, dim_in, cond_dim=cond_dim),
                         Upsample(dim_in, extra_upsample, cylindrical, compress_Z = compress_Z) if not is_last else nn.Identity(),
                     ]
                 )
@@ -362,7 +362,8 @@ class CondUnet(nn.Module):
 
         # upsample
         for i, (block1, block2, upsample) in enumerate(self.ups):
-            x = torch.cat((x, h.pop()), dim=1)
+            s = h.pop()
+            x = torch.cat((x, s), dim=1)
             x = block1(x, conditions)
             x = block2(x, conditions)
             if(self.block_attn): x = self.ups_attn[i](x)
