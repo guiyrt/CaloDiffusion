@@ -1,4 +1,5 @@
 {
+    'DEVICE':'cpu',
     'FILES':['dataset_2_1.hdf5'],
     'EVAL':['dataset_2_2.hdf5'],
     'DATASET_NUM' : 2,

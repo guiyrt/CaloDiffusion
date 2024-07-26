@@ -13,8 +13,6 @@ if __name__ == '__main__':
     os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
     print("TRAIN DIFFU")
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_folder', default='../datasets', help='Folder containing data and MC files')
@@ -27,6 +25,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     dataset_config = utils.LoadJson(args.config)
+    device = torch.device(dataset_config['DEVICE'])
 
     print("TRAINING OPTIONS")
     print(dataset_config, flush = True)

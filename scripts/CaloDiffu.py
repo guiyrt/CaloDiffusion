@@ -7,6 +7,7 @@ from torchinfo import summary
 
 from scripts.utils import *
 from scripts.models import *
+from scripts.utils import LoadJson
 
 
 class CaloDiffu(nn.Module):
@@ -15,7 +16,7 @@ class CaloDiffu(nn.Module):
         super(CaloDiffu, self).__init__()
         self._data_shape = data_shape
         self.nvoxels = np.prod(self._data_shape)
-        self.config = config
+        self.config = config if isinstance(config, dict) else LoadJson(config)
         self.num_heads=1
         self.nsteps = nsteps
         self.training_obj = training_obj
@@ -33,15 +34,15 @@ class CaloDiffu(nn.Module):
         self.verbose = 1
 
         
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device(self.config['DEVICE'])
 
 
         #Minimum and maximum maximum variance of noise
         self.beta_start = 0.0001
-        self.beta_end = config.get("BETA_MAX", 0.02)
+        self.beta_end = self.config.get("BETA_MAX", 0.02)
 
         #linear schedule
-        schedd = config.get("NOISE_SCHED", "linear")
+        schedd = self.config.get("NOISE_SCHED", "linear")
         self.discrete_time = True
 
         
@@ -71,18 +72,18 @@ class CaloDiffu(nn.Module):
 
             self.posterior_variance = self.betas * (1. - alphas_cumprod_prev) / (1. - self.alphas_cumprod)
 
-        self.time_embed = config.get("TIME_EMBED", 'sin')
-        self.E_embed = config.get("COND_EMBED", 'sin')
-        cond_dim = config['COND_SIZE_UNET']
-        layer_sizes = config['LAYER_SIZE_UNET']
-        block_attn = config.get("BLOCK_ATTN", False)
-        mid_attn = config.get("MID_ATTN", False)
-        compress_Z = config.get("COMPRESS_Z", False)
+        self.time_embed = self.config.get("TIME_EMBED", 'sin')
+        self.E_embed = self.config.get("COND_EMBED", 'sin')
+        cond_dim = self.config['COND_SIZE_UNET']
+        layer_sizes = self.config['LAYER_SIZE_UNET']
+        block_attn = self.config.get("BLOCK_ATTN", False)
+        mid_attn = self.config.get("MID_ATTN", False)
+        compress_Z = self.config.get("COMPRESS_Z", False)
 
 
         if(self.fully_connected):
             #fully connected network architecture
-            self.model = FCN(cond_dim = cond_dim, dim_in = config['SHAPE_ORIG'][1], num_layers = config['NUM_LAYERS_LINEAR'],
+            self.model = FCN(cond_dim = cond_dim, dim_in = self.config['SHAPE_ORIG'][1], num_layers = self.config['NUM_LAYERS_LINEAR'],
                     cond_embed = (self.E_embed == 'sin'), time_embed = (self.time_embed == 'sin') )
 
             self.R_Z_inputs = False
@@ -91,10 +92,10 @@ class CaloDiffu(nn.Module):
 
 
         else:
-            RZ_shape = config['SHAPE_PAD'][1:]
+            RZ_shape = self.config['SHAPE_PAD'][1:]
 
-            self.R_Z_inputs = config.get('R_Z_INPUT', False)
-            self.phi_inputs = config.get('PHI_INPUT', False)
+            self.R_Z_inputs = self.config.get('R_Z_INPUT', False)
+            self.phi_inputs = self.config.get('PHI_INPUT', False)
 
             in_channels = 1
 
@@ -110,12 +111,12 @@ class CaloDiffu(nn.Module):
             calo_summary_shape[1] = in_channels
 
             calo_summary_shape[0] = 1
-            summary_shape = [calo_summary_shape, [1], [1]]
+            summary_shape = [calo_summary_shape, [1, 1], [1, 1]]
 
 
             self.model = CondUnet(cond_dim = cond_dim, out_dim = 1, channels = in_channels, layer_sizes = layer_sizes, block_attn = block_attn, mid_attn = mid_attn, 
-                    cylindrical =  config.get('CYLINDRICAL', False), compress_Z = compress_Z, data_shape = calo_summary_shape,
-                    cond_embed = (self.E_embed == 'sin'), time_embed = (self.time_embed == 'sin') )
+                    cylindrical =  self.config.get('CYLINDRICAL', False), compress_Z = compress_Z, data_shape = calo_summary_shape,
+                    cond_embed = (self.E_embed == 'sin'), time_embed = (self.time_embed == 'sin')).to(device)
 
         print("\n\n Model: \n")
         summary(self.model, summary_shape)
@@ -130,6 +131,13 @@ class CaloDiffu(nn.Module):
         else: d_new = d
 
         return super().load_state_dict(d_new)
+    
+    def RZ(self, x):
+        batch_R_image = self.R_image.repeat([x.shape[0], 1,1,1,1]).to(device=x.device)
+        batch_Z_image = self.Z_image.repeat([x.shape[0], 1,1,1,1]).to(device=x.device)
+
+        return batch_R_image, batch_Z_image
+
 
     def add_RZPhi(self, x):
         cats = [x]
@@ -145,12 +153,6 @@ class CaloDiffu(nn.Module):
             cats += [batch_phi_image]
 
         return torch.cat(cats, axis = 1) if len(cats) > 1 else x
-            
-    
-    def lookup_avg_std_shower(self, inputEs):
-        idxs = torch.bucketize(inputEs, self.E_bins)  - 1 #NP indexes bins starting at 1 
-        return self.avg_showers[idxs], self.std_showers[idxs]
-
     
     def noise_image(self, data = None, t = None, noise = None):
 
@@ -167,27 +169,31 @@ class CaloDiffu(nn.Module):
             print("non discrete time not supported")
             exit(1)
 
+    def compute_loss2(self, data, energy, noise, t, loss_type = "l2", rnd_normal = None, energy_loss_scale = 1e-2):
+        x_noisy = self.noise_image(data, t, noise=noise)
+        sigma = None
+        sigma2 = extract(self.sqrt_one_minus_alphas_cumprod, t, data.shape)**2
 
-    def compute_loss(self, data, energy, noise = None, t = None, loss_type = "l2", rnd_normal = None, energy_loss_scale = 1e-2):
-        if noise is None:
-            noise = torch.randn_like(data)
+        t_emb = torch.reshape(self.do_time_embed(t, self.time_embed, sigma), (-1, 1))
+        pred = self.pred(x_noisy, energy, t_emb)
+
+        return t_emb, pred
+
+    def compute_loss(self, data, energy, noise, t, loss_type = "l2", rnd_normal = None, energy_loss_scale = 1e-2):
 
         if(self.discrete_time): 
-            if(t is None): t = torch.randint(0, self.nsteps, (data.size()[0],), device=data.device).long()
             x_noisy = self.noise_image(data, t, noise=noise)
             sigma = None
             sigma2 = extract(self.sqrt_one_minus_alphas_cumprod, t, data.shape)**2
         else:
-            if(rnd_normal is None): rnd_normal = torch.randn((data.size()[0],), device=data.device)
+            if rnd_normal is None:
+                rnd_normal = torch.randn((data.size()[0],), device=data.device)
             sigma = (rnd_normal * self.P_std + self.P_mean).exp()
             x_noisy = data + torch.reshape(sigma, (data.shape[0], 1,1,1,1)) * noise
             sigma2 = sigma**2
 
 
-
-        t_emb = self.do_time_embed(t, self.time_embed, sigma)
-
-
+        t_emb = torch.reshape(self.do_time_embed(t, self.time_embed, sigma), (-1, 1))
         pred = self.pred(x_noisy, energy, t_emb)
 
         weight = 1.
@@ -266,19 +272,6 @@ class CaloDiffu(nn.Module):
         out = self.model(self.add_RZPhi(x), E, t_emb)
         if(self.NN_embed is not None): out = self.NN_embed.dec(out).to(x.device)
         return out
-
-    def denoise(self, x, E,t_emb):
-        pred = self.pred(x, E, t_emb)
-        if('mean_pred' in self.training_obj):
-            return pred
-        elif('hybrid' in self.training_obj):
-
-            sigma2 = (t_emb**2).reshape(-1,1,1,1,1)
-            c_skip = 1. / (sigma2 + 1.)
-            c_out = torch.sqrt(sigma2) / (sigma2 + 1.).sqrt()
-
-            return c_skip * x + c_out * pred
-
 
     @torch.no_grad()
     def p_sample(self, x, E, t, noise=None, sample_algo='ddpm'):

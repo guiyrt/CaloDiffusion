@@ -85,13 +85,12 @@ class MlpEmbeddings(nn.Module):
         super().__init__()
         halfdim = dim // 2
 
-        self.unflatten = nn.Unflatten(-1, (-1, 1))
         self._in = nn.Sequential(nn.Linear(1, halfdim // 2), nn.GELU())
         self.hidden = nn.Sequential(nn.Linear(halfdim // 2, halfdim), nn.GELU())
         self.out = nn.Linear(halfdim, halfdim)
 
     def forward(self, time: torch.Tensor):
-        return self.out(self.hidden(self._in(self.unflatten(time))))
+        return self.out(self.hidden(self._in(time)))
 
 
 class ConvBlock(nn.Module):
@@ -205,13 +204,13 @@ class FCN(nn.Module):
         half_cond_dim = cond_dim // 2
         time_layers = []
         if(time_embed): time_layers = [SinusoidalPositionEmbeddings(half_cond_dim//2)]
-        else: time_layers = [nn.Unflatten(-1, (-1, 1)), nn.Linear(1, half_cond_dim//2),nn.GELU() ]
+        else: time_layers = [nn.Linear(1, half_cond_dim//2),nn.GELU()]
         time_layers += [ nn.Linear(half_cond_dim//2, half_cond_dim), nn.GELU(), nn.Linear(half_cond_dim, half_cond_dim)]
 
 
         cond_layers = []
         if(cond_embed): cond_layers = [SinusoidalPositionEmbeddings(half_cond_dim//2)]
-        else: cond_layers = [nn.Unflatten(-1, (-1, 1)), nn.Linear(1, half_cond_dim//2),nn.GELU()]
+        else: cond_layers = [nn.Linear(1, half_cond_dim//2),nn.GELU()]
         cond_layers += [ nn.Linear(half_cond_dim//2, half_cond_dim), nn.GELU(), nn.Linear(half_cond_dim, half_cond_dim)]
 
 

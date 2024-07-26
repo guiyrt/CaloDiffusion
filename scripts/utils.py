@@ -55,11 +55,13 @@ def create_R_Z_image(device, scaled = True, shape = (1,45,16,9)):
     assert(len(r_avgs) == shape[-1])
     Z_image = torch.zeros(shape, device=device)
     R_image = torch.zeros(shape, device=device)
+    
     for z in range(shape[1]):
         Z_image[:,z,:,:] = z
 
     for r in range(shape[-1]):
-        R_image[:,:,:,r] = r_avgs[r] 
+        R_image[:,:,:,r] = r_avgs[r]
+
     if(scaled):
         r_max = r_avgs[-1]
         z_max = shape[1]
@@ -347,7 +349,6 @@ def DataLoader(file_name,shape, emax, emin, nevts=-1,  max_deposit = 2, ecut = 0
     E_preprocessed = np.log10(e/emin)/np.log10(emax/emin) if logE else (e-emin)/(emax-emin)
 
     shower_preprocessed = np.reshape(shower_preprocessed, shape) if not orig_shape else np.reshape(shower_preprocessed, (len(shower_preprocessed), -1))
-    E_preprocessed = np.reshape(E_preprocessed,(-1))
 
     return shower_preprocessed, E_preprocessed 
 
