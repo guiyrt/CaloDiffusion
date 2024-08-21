@@ -9,6 +9,7 @@ import torch.nn as nn
 import sys
 import joblib
 sys.path.append("..")
+sys.path.append(".")
 from CaloChallenge.code.XMLHandler import *
 from scripts.consts import *
 

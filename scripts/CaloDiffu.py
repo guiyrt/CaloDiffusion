@@ -12,14 +12,14 @@ from scripts.utils import LoadJson
 
 class CaloDiffu(nn.Module):
     """Diffusion based generative model"""
-    def __init__(self, data_shape, config, training_obj = 'noise_pred', nsteps = 400, NN_embed = None):
+    def __init__(self, data_shape, config, NN_embed = None):
         super(CaloDiffu, self).__init__()
         self._data_shape = data_shape
         self.nvoxels = np.prod(self._data_shape)
         self.config = config if isinstance(config, dict) else LoadJson(config)
         self.num_heads=1
-        self.nsteps = nsteps
-        self.training_obj = training_obj
+        self.nsteps = self.config["NSTEPS"]
+        self.training_obj = self.config.get('TRAINING_OBJ', 'noise_pred')
         self.shower_embed = self.config.get('SHOWER_EMBED', '')
         self.fully_connected = ('FCN' in self.shower_embed)
         self.NN_embed = NN_embed
@@ -168,16 +168,6 @@ class CaloDiffu(nn.Module):
         else:
             print("non discrete time not supported")
             exit(1)
-
-    def compute_loss2(self, data, energy, noise, t, loss_type = "l2", rnd_normal = None, energy_loss_scale = 1e-2):
-        x_noisy = self.noise_image(data, t, noise=noise)
-        sigma = None
-        sigma2 = extract(self.sqrt_one_minus_alphas_cumprod, t, data.shape)**2
-
-        t_emb = torch.reshape(self.do_time_embed(t, self.time_embed, sigma), (-1, 1))
-        pred = self.pred(x_noisy, energy, t_emb)
-
-        return t_emb, pred
 
     def compute_loss(self, data, energy, noise, t, loss_type = "l2", rnd_normal = None, energy_loss_scale = 1e-2):
 

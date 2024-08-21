@@ -13,7 +13,7 @@ dependencies:
     - torch==1.9.1+cu111
     - h5py
     - tqdm
-    - numpy
+    - numpy==1.26.4
     - einops
     - joblib
     - PyYAML

@@ -104,7 +104,7 @@ if __name__ == '__main__':
 
 
     shape = dataset_config['SHAPE_PAD'][1:] if not orig_shape else dataset_config['SHAPE_ORIG'][1:]
-    model = CaloDiffu(shape, config=dataset_config, training_obj=training_obj, NN_embed=NN_embed, nsteps=dataset_config['NSTEPS']).to(device=device)
+    model = CaloDiffu(shape, config=dataset_config, NN_embed=NN_embed).to(device=device)
 
 
     #sometimes save only weights, sometimes save other info
