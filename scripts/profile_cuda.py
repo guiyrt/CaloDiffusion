@@ -1,10 +1,9 @@
 import os
-import pickle
+import nvtx
 import argparse
 import numpy as np
 import torch.optim as optim
 import torch.utils.data as torchdata
-import torch.utils.benchmark as benchmark
 
 import scripts.utils as utils
 from scripts.models import *
@@ -20,12 +19,10 @@ if __name__ == '__main__':
     parser.add_argument('--warmup', type=int, default=10, help='Number of steps to run before profiling')
     parser.add_argument('--batch-size', type=int, help='Number of samples per batch')
     parser.add_argument('--device', type=str, choices=["cpu", "cuda"], help='Type of device (cpu/cuda) to use for benchmark')
-    parser.add_argument('--output', type=str, default="benchmark", help='Path (without extension) to save ouput files')
     args = parser.parse_args()
 
-
     dataset_config = utils.load_config(args.config, args.batch_size, args.device)
-    device = torch.device(dataset_config["DEVICE"])
+    device = torch.device(dataset_config['DEVICE'])
     batch_size = dataset_config['BATCH']
     training_obj = dataset_config.get('TRAINING_OBJ', 'noise_pred')
     loss_type = dataset_config.get("LOSS_TYPE", "l2")
@@ -73,39 +70,52 @@ if __name__ == '__main__':
 
     shape = dataset_config['SHAPE_PAD'][1:] if not orig_shape else dataset_config['SHAPE_ORIG'][1:]
     model = CaloDiffu(shape, config=dataset_config, NN_embed=NN_embed).to(device=device)
-    optimizer = optim.Adam(model.parameters(), lr=float(dataset_config["LR"]))
+    optimizer = optim.Adam(model.parameters(), lr = float(dataset_config["LR"]))
+    model.train()
 
-    def step(model, optimizer, loader):
+    def step():
+        step_rng = nvtx.start_range(message="Step")
+
+        rng = nvtx.start_range(message="Zero grad")
         model.zero_grad()
         optimizer.zero_grad()
+        nvtx.end_range(rng)
         
-        E, data = loader.__next__()
+        rng = nvtx.start_range(message="Get batch")
+        E, data = loader_train.__next__()
         data = data.to(device = device)
         E = E.to(device = device)
-        t = torch.randint(0, model.nsteps, (data.size()[0],), device=device).long()
-        noise = torch.randn_like(data)
+        nvtx.end_range(rng)
 
+        rng = nvtx.start_range(message="Random t")
+        t = torch.randint(0, model.nsteps, (data.size()[0],), device=device).long()
+        nvtx.end_range(rng)
+
+        rng = nvtx.start_range(message="Random noise")
+        noise = torch.randn_like(data)
+        nvtx.end_range(rng)
+
+        rng = nvtx.start_range(message="Forward pass")
         batch_loss = model.compute_loss(data, E, noise = noise, t = t, loss_type = loss_type, energy_loss_scale = energy_loss_scale)
+        nvtx.end_range(rng)
+
+        rng = nvtx.start_range(message="Backward pass")
         batch_loss.backward()
+        nvtx.end_range(rng)
+
+        rng = nvtx.start_range(message="Update weights")
         optimizer.step()
+        nvtx.end_range(rng)
 
         del data, E, noise, batch_loss
+        nvtx.end_range(step_rng)
     
     # Warm-up
     for _ in range(args.warmup):
-        step(model, optimizer, loader_train)
+        step()
 
-    # Measurement
-    measurement = benchmark.Timer(
-        stmt='step(model, optimizer, loader)',
-        setup='from __main__ import step',
-        globals={'model': model, 'optimizer': optimizer, 'loader': loader_train}
-    ).timeit(args.steps)
-
-    # Save summary
-    with open(f"{args.output}.txt", "w") as f:
-        f.write(repr(measurement))
-
-    # Save object
-    with open(f"{args.output}.pckl", "wb") as f:
-        pickle.dump(measurement, f)
+    # Start profiler
+    torch.cuda.cudart().cudaProfilerStart()
+    for _ in range(args.steps):
+        step()
+    torch.cuda.cudart().cudaProfilerStop()

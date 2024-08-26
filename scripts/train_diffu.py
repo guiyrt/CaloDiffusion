@@ -24,7 +24,7 @@ if __name__ == '__main__':
     parser.add_argument('--reset_training', action='store_true', default=False,help='Retrain')
     args = parser.parse_args()
 
-    dataset_config = utils.LoadJson(args.config)
+    dataset_config = utils.load_config(args.config)
     device = torch.device(dataset_config['DEVICE'])
 
     print("TRAINING OPTIONS")

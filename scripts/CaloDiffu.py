@@ -7,7 +7,7 @@ from torchinfo import summary
 
 from scripts.utils import *
 from scripts.models import *
-from scripts.utils import LoadJson
+from scripts.utils import load_config
 
 
 class CaloDiffu(nn.Module):
@@ -16,7 +16,7 @@ class CaloDiffu(nn.Module):
         super(CaloDiffu, self).__init__()
         self._data_shape = data_shape
         self.nvoxels = np.prod(self._data_shape)
-        self.config = config if isinstance(config, dict) else LoadJson(config)
+        self.config = config if isinstance(config, dict) else load_config(config)
         self.num_heads=1
         self.nsteps = self.config["NSTEPS"]
         self.training_obj = self.config.get('TRAINING_OBJ', 'noise_pred')

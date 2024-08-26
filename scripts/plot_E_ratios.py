@@ -35,7 +35,7 @@ parser.add_argument('--debug', action='store_true', default=False,help='Debuggin
 parser.add_argument('--from_end', action='store_true', default = False, help='Use events from end of file (usually holdout set)')
 
 flags = parser.parse_args()
-dataset_config = utils.LoadJson(flags.config)
+dataset_config = utils.load_config(flags.config)
 emax = dataset_config['EMAX']
 emin = dataset_config['EMIN']
 training_obj = dataset_config.get('TRAINING_OBJ', 'noise_pred')

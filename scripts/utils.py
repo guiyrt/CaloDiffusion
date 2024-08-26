@@ -1,6 +1,8 @@
 import os
+import yaml
 import h5py as h5
 import numpy as np
+from typing import Optional
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import matplotlib.ticker as mtick
@@ -417,13 +419,18 @@ def preprocess_shower(shower, e, shape, showerMap = 'log-norm', dataset_num = 2,
 
     return shower
 
-        
 
-def LoadJson(file_name):
-    import json,yaml
-    JSONPATH = os.path.join(file_name)
-    return yaml.safe_load(open(JSONPATH))
+def load_config(file_name, batch_size: Optional[int] = None, device: Optional[str] = None):
+    config = yaml.safe_load(open(os.path.join(file_name)))
 
+    if batch_size is not None: config["BATCH"] = batch_size
+    
+    if device is not None:
+        config["DEVICE"] = device
+    elif "DEVICE" not in config:
+        config["DEVICE"] = "cuda" if torch.cuda.is_available() else "cpu"
+
+    return config
 
 def ReverseNorm(voxels,e,shape,emax,emin,max_deposit=2,logE=True, showerMap ='log', dataset_num = 2, orig_shape = False, ecut = 0.):
     '''Revert the transformations applied to the training set'''

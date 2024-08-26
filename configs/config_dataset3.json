@@ -1,5 +1,5 @@
 {
-    'DEVICE':'cuda',
+    // 'DEVICE':'cpu',
     'FILES':['dataset_3_1.hdf5','dataset_3_2.hdf5'],
     'EVAL':['dataset_3_3.hdf5', 'dataset_3_4.hdf5'],
     'DATASET_NUM' : 3,

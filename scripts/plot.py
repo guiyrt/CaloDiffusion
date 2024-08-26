@@ -43,7 +43,7 @@ parser.add_argument('--debug', action='store_true', default=False,help='Debuggin
 flags = parser.parse_args()
 
 nevts = int(flags.nevts)
-dataset_config = utils.LoadJson(flags.config)
+dataset_config = utils.load_config(flags.config)
 emax = dataset_config['EMAX']
 emin = dataset_config['EMIN']
 cold_diffu = dataset_config.get('COLD_DIFFU', False)
